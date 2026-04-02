@@ -79,31 +79,34 @@ class CharTokenizer:
         text : Full corpus string used to build the vocabulary.
     """
 
-    def __init__(self, text: str) -> None:
-        # Sorted unique characters for deterministic vocab ordering
-        unique_chars: List[str] = sorted(set(text))
+    def __init__(
+        self,
+        split:      str   = "train",
+        chunk_size: int   = 128,
+        train_frac: float = 0.9,
+    ) -> None:
+        assert split in ("train", "val"), "split must be 'train' or 'val'"
+        self.chunk_size: int = chunk_size
 
-        self.char_to_id: Dict[str, int] = {
-            ch: idx + _SPECIAL_OFFSET for idx, ch in enumerate(unique_chars)
-        }
-        self.id_to_char: Dict[int, str] = {
-            idx + _SPECIAL_OFFSET: ch for idx, ch in enumerate(unique_chars)
-        }
+        # 1. Load text
+        text: str = self._load_text()
 
-        # Register special tokens in both lookup tables
-        for token, token_id in SPECIAL_TOKENS.items():
-            self.char_to_id[token] = token_id
-            self.id_to_char[token_id] = token
+        # 2. Build tokenizer
+        self.tokenizer: CharTokenizer = CharTokenizer(text)
 
-        # Total vocabulary: special tokens + unique characters
-        self.vocab_size: int = _SPECIAL_OFFSET + len(unique_chars)
+        # 3. Encode the entire corpus
+        all_ids: List[int] = self.tokenizer.encode(text)
 
-        # Expose special-token IDs for convenience
-        self.pad_id: int = PAD_ID
-        self.sos_id: int = SOS_ID
-        self.eos_id: int = EOS_ID
-        self.unk_id: int = UNK_ID
+        # 4. Train / validation split
+        split_idx: int = int(len(all_ids) * train_frac)
+        self._data: List[int] = (
+            all_ids[:split_idx] if split == "train" else all_ids[split_idx:]
+        )
 
+        # 5. Pre-compute chunk starts
+        # We now need 2 * chunk_size tokens per sequence (one chunk for encoder, one for decoder)
+        n: int = len(self._data)
+        self._starts: List[int] = list(range(0, n - (2 * chunk_size), chunk_size))
     def encode(self, text: str) -> List[int]:
         """Convert a string to a list of integer token IDs."""
         return [self.char_to_id.get(ch, self.unk_id) for ch in text]
@@ -151,25 +154,25 @@ class ShakespeareDataset(Dataset):
         assert split in ("train", "val"), "split must be 'train' or 'val'"
         self.chunk_size: int = chunk_size
 
-        # 1. Load (downloading if necessary)
+        # 1. Load text
         text: str = self._load_text()
 
-        # 2. Build tokenizer from the full corpus
+        # 2. Build tokenizer
         self.tokenizer: CharTokenizer = CharTokenizer(text)
 
-        # 3. Encode the entire corpus to a flat list of token IDs
+        # 3. Encode the entire corpus
         all_ids: List[int] = self.tokenizer.encode(text)
 
-        # 4. Train / validation split (by token index)
+        # 4. Train / validation split
         split_idx: int = int(len(all_ids) * train_frac)
         self._data: List[int] = (
             all_ids[:split_idx] if split == "train" else all_ids[split_idx:]
         )
 
-        # 5. Pre-compute non-overlapping chunk start positions
-        #    We need at least chunk_size tokens per chunk.
+        # 5. Pre-compute chunk starts
+        # We now need 2 * chunk_size tokens per sequence (one chunk for encoder, one for decoder)
         n: int = len(self._data)
-        self._starts: List[int] = list(range(0, n - chunk_size, chunk_size))
+        self._starts: List[int] = list(range(0, n - (2 * chunk_size), chunk_size))
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -192,27 +195,27 @@ class ShakespeareDataset(Dataset):
     def __getitem__(
         self, idx: int
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Return a (src, trg, labels) triple for the idx-th chunk.
-
-        src    : tokens[0..L-1]                 — encoder input
-        trg    : [<SOS>] + tokens[0..L-2]       — decoder input (right-shifted)
-        labels : tokens[0..L-1]                 — per-position training targets
-        """
+        
         start: int   = self._starts[idx]
-        chunk: List[int] = self._data[start : start + self.chunk_size]
+        L: int = self.chunk_size
 
-        # Encoder input: the raw chunk
-        src: torch.Tensor = torch.tensor(chunk, dtype=torch.long)
+        # Source (Encoder Input): The first half of the data window
+        src_chunk: List[int] = self._data[start : start + L]
+        
+        # Target (Decoder/Labels): The second half of the data window (the continuation)
+        trg_chunk: List[int] = self._data[start + L : start + 2 * L]
 
-        # Decoder input: <SOS> followed by all-but-last tokens of the chunk
+        # Encoder input
+        src: torch.Tensor = torch.tensor(src_chunk, dtype=torch.long)
+
+        # Decoder input: <SOS> followed by all-but-last tokens of the target chunk
         trg: torch.Tensor = torch.tensor(
-            [self.tokenizer.sos_id] + chunk[: self.chunk_size - 1],
+            [self.tokenizer.sos_id] + trg_chunk[: L - 1],
             dtype=torch.long,
         )
 
-        # Labels: the full chunk (each position predicts the next character)
-        labels: torch.Tensor = torch.tensor(chunk, dtype=torch.long)
+        # Labels: the full target chunk 
+        labels: torch.Tensor = torch.tensor(trg_chunk, dtype=torch.long)
 
         return src, trg, labels
 
