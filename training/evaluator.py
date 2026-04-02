@@ -126,42 +126,51 @@ def generate_text(
         [[tokenizer.sos_id]], dtype=torch.long, device=device
     )
     generated_ids: List[int] = []
+    max_len = 256
 
     for _ in range(max_gen_len):
-        trg_mask: torch.Tensor = model.make_trg_mask(trg)
-        dec_out, _, _ = model.decoder(
-            trg, encoder_out, trg_mask=trg_mask, src_mask=src_mask
-        )
-
-        # Logits for the last generated position
-        logits: torch.Tensor = model.output_proj(dec_out[:, -1, :])  # (1, V)
-
-        if top_k > 0 or temperature != 1.0:
-            # Apply temperature scaling
-            logits = logits / max(temperature, 1e-8)
-
-            if top_k > 0:
-                # Zero out all logits below the k-th highest value
-                k = min(top_k, logits.size(-1))
-                top_vals, _ = torch.topk(logits, k)
-                threshold: torch.Tensor = top_vals[:, -1].unsqueeze(-1)
-                logits = logits.masked_fill(logits < threshold, float("-inf"))
-
-            probs: torch.Tensor = F.softmax(logits, dim=-1)
-            next_token: torch.Tensor = torch.multinomial(probs, num_samples=1)
-        else:
-            # Greedy
-            next_token = logits.argmax(dim=-1, keepdim=True)
-
-        token_id: int = int(next_token.item())
-
-        if token_id == tokenizer.eos_id:
-            break
-
-        generated_ids.append(token_id)
-        trg = torch.cat([trg, next_token], dim=1)
-
-    return prompt + tokenizer.decode(generated_ids)
+            
+            # Crop the target sequence if it exceeds the model's maximum length capacity
+            if trg.size(1) > max_len:
+                trg_input = trg[:, -max_len:]
+            else:
+                trg_input = trg    
+            # Use the cropped `trg_input` for the forward pass, NOT the full `trg`
+            trg_mask: torch.Tensor = model.make_trg_mask(trg_input)
+            dec_out, _, _ = model.decoder(
+                trg_input, encoder_out, trg_mask=trg_mask, src_mask=src_mask
+            )
+    
+            # Logits for the last generated position
+            logits: torch.Tensor = model.output_proj(dec_out[:, -1, :])  # (1, V)
+    
+            if top_k > 0 or temperature != 1.0:
+                # Apply temperature scaling
+                logits = logits / max(temperature, 1e-8)
+    
+                if top_k > 0:
+                    # Zero out all logits below the k-th highest value
+                    k = min(top_k, logits.size(-1))
+                    top_vals, _ = torch.topk(logits, k)
+                    threshold: torch.Tensor = top_vals[:, -1].unsqueeze(-1)
+                    logits = logits.masked_fill(logits < threshold, float("-inf"))
+    
+                probs: torch.Tensor = F.softmax(logits, dim=-1)
+                next_token: torch.Tensor = torch.multinomial(probs, num_samples=1)
+            else:
+                # Greedy
+                next_token = logits.argmax(dim=-1, keepdim=True)
+    
+            token_id: int = int(next_token.item())
+    
+            if token_id == tokenizer.eos_id:
+                break
+    
+            generated_ids.append(token_id)
+            
+            trg = torch.cat([trg, next_token], dim=1)
+    
+        return prompt + tokenizer.decode(generated_ids)
 
 
 # ── High-level demo ───────────────────────────────────────────────────────────
