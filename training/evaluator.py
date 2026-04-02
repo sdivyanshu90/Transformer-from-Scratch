@@ -170,7 +170,7 @@ def generate_text(
             
             trg = torch.cat([trg, next_token], dim=1)
     
-        return prompt + tokenizer.decode(generated_ids)
+    return prompt + tokenizer.decode(generated_ids)
 
 
 # ── High-level demo ───────────────────────────────────────────────────────────
