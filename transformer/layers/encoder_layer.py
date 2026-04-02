@@ -33,7 +33,7 @@ import torch
 import torch.nn as nn
 
 from ..attention.multi_head import MultiHeadAttention
-from .feed_forward import PositionWiseFeedForward as FeedForward
+from .feed_forward import PositionWiseFeedForward
 
 class EncoderLayer(nn.Module):
     """
